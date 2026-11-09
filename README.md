@@ -111,7 +111,7 @@ bash build/build.sh                       # -> dist/libmojo-radix-sort.so
 PYTHONPATH=python /nvme0n1-disk/mojo-toolchain/testvenv/bin/python -m pytest tests -q
 ```
 
-112 tests, all passing. `bench/bench.py` gates on bit-exact agreement with
+230 tests, all passing. `bench/bench.py` gates on bit-exact agreement with
 `np.sort(kind="stable")` before timing anything; run it under a per-project
 lock, since the shared `/tmp/mojo-bench.lock` is contended by every other port
 on the box:
@@ -130,31 +130,32 @@ encoding pass.
 
 | case | numpy | mojo-radix-sort | ratio |
 | --- | ---: | ---: | ---: |
-| int64 sort n=65k, 8 bits/pass | 6.09 ms | 4.37 ms | **1.39x** |
-| int64 sort n=1M, 8 bits/pass | 156.58 ms | 188.95 ms | 0.83x |
-| int64 sort n=1M, 11 bits/pass | 147.46 ms | 229.53 ms | 0.64x |
-| int64 sort n=1M, 16 bits/pass | 128.56 ms | 438.54 ms | 0.29x |
-| float64 sort n=1M, 8 bits/pass | 172.77 ms | 155.62 ms | **1.11x** |
-| int32 sort n=1M, 8 bits/pass | 130.50 ms | 108.60 ms | **1.20x** |
-| int64 argsort n=1M, 8 bits/pass | 219.34 ms | 367.67 ms | 0.60x |
-| byte-valued keys n=1M, 8 bits/pass | 95.96 ms | 56.98 ms | **1.68x** |
-| sort_pairs, 20-bit keys n=1M | 202.39 ms | 185.86 ms | **1.09x** |
+| int64 sort n=65k, 8 bits/pass | 4.64 ms | 3.19 ms | **1.45x** |
+| int64 sort n=1M, 8 bits/pass | 111.57 ms | 100.03 ms | **1.12x** |
+| int64 sort n=1M, 11 bits/pass | 111.06 ms | 125.56 ms | 0.88x |
+| int64 sort n=1M, 16 bits/pass | 112.72 ms | 175.06 ms | 0.64x |
+| float64 sort n=1M, 8 bits/pass | 127.65 ms | 71.86 ms | **1.78x** |
+| int32 sort n=1M, 8 bits/pass | 106.40 ms | 34.89 ms | **3.05x** |
+| int64 argsort n=1M, 8 bits/pass | 151.34 ms | 278.09 ms | 0.54x |
+| byte-valued keys n=1M, 8 bits/pass | 67.91 ms | 32.66 ms | **2.08x** |
+| sort_pairs, 20-bit keys n=1M | 154.35 ms | 108.06 ms | **1.43x** |
 
 Read honestly:
 
 - **Wins** on 32-bit keys, on byte-valued keys, and at small n. Byte keys win
-  by the most because five of the eight passes are skipped as concentrated and
+  by the most because seven of the eight passes are skipped as concentrated and
   the remaining one is 256 buckets over a 1 MB array that never leaves cache.
-- **Loses** on full-width 64-bit keys (0.83x for `sort`, 0.60x for `argsort`).
-  Eight passes over 1M `int64` is 128 MB of traffic for a keys-only sort, and
-  the scatter advances 256 independent write streams, which the store buffer
-  cannot track. NumPy's `int64` sort is an introsort, not a radix sort, and it
-  wins anyway.
+- **Loses** on full-width 64-bit keys at wider digit widths and on `argsort`
+  (0.88x at 11 bits/pass, 0.64x at 16 bits/pass, 0.54x for `argsort` at 8
+  bits/pass). Eight passes over 1M `int64` is 128 MB of traffic for a keys-only
+  sort, and the scatter advances 256 independent write streams, which the
+  store buffer cannot track. NumPy's `int64` sort is an introsort, not a radix
+  sort, and it wins anyway.
 - **16 bits per pass is much worse**, not better: a 65536-bucket histogram is
   512 KB and does not fit L2, so the per-pass bookkeeping costs more than the
   pass it saves. Fewer, wider passes is the wrong instinct here.
 - `sort` beats `argsort` because it never builds an index and never gathers.
-  The gap is the whole story for the two 64-bit rows.
+  The gap is the whole story for the full-width `int64` rows.
 
 ### Optimisation tried and rejected
 
@@ -170,8 +171,9 @@ measurement is recorded in the `rs_lsd_sort` docstring so nobody re-derives it.
 
 What *did* help was giving the driver an index-free mode: `sort` permutes
 nothing and gathers nothing, halving the traffic of every pass and removing a
-47 ms random-access gather. That is the difference between the 0.27x this port
-started at and the 0.83x it finishes at.
+random-access gather (4.6 ms at n=1M, measured in the verify phase). That is
+the difference between the 0.27x this port started at and the 1.12x it now
+measures at 8 bits/pass.
 
 ## Layout
 
