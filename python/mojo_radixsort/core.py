@@ -64,6 +64,8 @@ def order_keys(keys: np.ndarray) -> np.ndarray:
     for every supported dtype.
     """
     keys = np.ascontiguousarray(keys)
+    if keys.ndim != 1:
+        raise ValueError("keys must be a 1-D array")
     dt = keys.dtype
     if dt not in _ENCODERS:
         raise TypeError(f"unsupported key dtype {dt}")
@@ -182,6 +184,11 @@ def argsort(keys: np.ndarray, *, bits: int = DEFAULT_BITS):
     whose high digits are all equal skips those passes, which is why the
     returned count is not always `ceil(total_bits / bits)`.
     """
+    # Validate before the empty short-circuit so bad bits is rejected
+    # even when there is nothing to sort (np.sort raises the same
+    # ValueError class for an invalid axis/parameter on empty input).
+    if not 1 <= bits <= 16:
+        raise ValueError("bits must be in 1..16")
     enc, total_bits = order_keys(keys)
     n = enc.size
     if n == 0:
@@ -197,6 +204,9 @@ def sort(keys: np.ndarray, *, bits: int = DEFAULT_BITS) -> np.ndarray:
     in place by the kernel and reinterpreted back to the input dtype. The
     reinterpretation is exact, because the key encoding is a bijection.
     """
+    # Validate before the empty short-circuit (see argsort).
+    if not 1 <= bits <= 16:
+        raise ValueError("bits must be in 1..16")
     keys = np.ascontiguousarray(keys)
     enc, total_bits = order_keys(keys)
     if enc.size == 0:
@@ -210,8 +220,10 @@ def sort_pairs(keys: np.ndarray, values: np.ndarray, *,
     """Sort `values` by `keys`, ties broken by original position."""
     keys = np.ascontiguousarray(keys)
     values = np.ascontiguousarray(values)
-    if keys.size != values.size:
-        raise ValueError("keys and values must be the same length")
+    # Shape, not just size: a (1, n) values array has the right size but
+    # values[order] would raise IndexError instead of ValueError.
+    if keys.shape != values.shape:
+        raise ValueError("keys and values must have the same shape")
     order, _ = argsort(keys, bits=bits)
     return values[order]
 
@@ -220,6 +232,12 @@ def digit_histogram(keys: np.ndarray, bits: int, shift: int) -> np.ndarray:
     """Counts of the `shift`-th `bits`-wide digit of pre-encoded `uint64` keys."""
     if not 1 <= bits <= 16:
         raise ValueError("bits must be in 1..16")
+    # The kernel shifts in UInt64 and the shift amount is masked to 6 bits,
+    # so shift=64 silently means 0 and shift=-1 means 63. A negative shift
+    # or a digit that runs past the top of the key would be meaningless,
+    # so reject it rather than silently counting the wrong digit.
+    if not 0 <= shift <= 64 - bits:
+        raise ValueError("shift must satisfy 0 <= shift <= 64 - bits")
     enc, _ = order_keys(keys)
     hist = np.empty(1 << bits, dtype=np.uint64)
     _lib.lib.rs_histogram_pass(
